@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Extractor V3 Inteligente</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body class="bg-zinc-50 min-h-screen p-4">
+<div class="max-w-7xl mx-auto">
+<h1 class="text-xl font-bold">Extractor V3 - Busca OC en cualquier lugar</h1>
+<p class="text-xs text-zinc-500 mb-4">Detecta ORDEN DE COMPRA / OC / O.C. / PEDIDO / REF en cualquier parte de la factura</p>
+<div id="drop" class="border-2 border-dashed rounded-2xl p-8 text-center bg-white cursor-pointer">
+<p>📸 Arrastra facturas (aunque estén torcidas) o clic</p>
+<input id="fileInput" type="file" multiple accept="image/*" class="hidden">
+</div>
+<div id="progress" class="hidden mt-3 text-xs bg-black text-white p-2 rounded"></div>
+<div class="mt-4 bg-white rounded-xl shadow overflow-auto">
+<table class="w-full text-xs"><thead class="bg-black text-white"><tr>
+<th class="p-2">Foto</th><th class="p-2">Proveedor</th><th class="p-2 w-[32%]">Ítems (editable)</th><th class="p-2">Fecha</th><th class="p-2">OC detectada</th><th class="p-2">Usuario</th><th class="p-2"></th>
+</tr></thead><tbody id="tbody"></tbody></table>
+<div id="empty" class="p-8 text-center text-zinc-400 text-xs">Sube facturas - V3 busca la OC en todo el texto</div>
+</div>
+<div class="flex gap-2 mt-4"><button id="exportBtn" class="bg-black text-white px-5 py-2 rounded-xl text-sm font-bold">Excel</button>
+<button id="clearBtn" class="text-xs px-3">Limpiar</button><span id="log" class="text-[10px] text-zinc-400 ml-auto"></span></div>
+<div id="debug" class="mt-4 hidden bg-zinc-100 p-3 rounded text-[10px] font-mono whitespace-pre-wrap"></div>
+</div>
+<script>
+const drop=document.getElementById('drop'),fileInput=document.getElementById('fileInput'),tbody=document.getElementById('tbody'),progress=document.getElementById('progress'),empty=document.getElementById('empty'),logEl=document.getElementById('log'),debugEl=document.getElementById('debug');
+let rows=[];
+drop.onclick=()=>fileInput.click();drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();handle(e.dataTransfer.files)};fileInput.onchange=e=>handle(e.target.files);
+
+async function handle(files){
+ empty.classList.add('hidden');progress.classList.remove('hidden');
+ for(let f of files){
+  progress.innerText='OCR '+f.name+'...';
+  const url=await new Promise(r=>{let fr=new FileReader();fr.onload=()=>r(fr.result);fr.readAsDataURL(f)});
+  let txt='';
+  try{const {data:{text}}=await Tesseract.recognize(url,'spa+eng',{logger:m=>{if(m.status==='recognizing text')progress.innerText=`OCR ${f.name} ${Math.round(m.progress*100)}%`}});txt=text;}catch(e){txt=''}
+  const parsed=smartParse(txt);
+  rows.push({fileName:f.name,thumb:url,raw:txt,...parsed});
+  debugEl.classList.remove('hidden');debugEl.innerText='TEXTO OCR DETECTADO:\n'+txt.slice(0,1500)+'\n\n--- PARSEADO ---\n'+JSON.stringify(parsed,null,2);
+ }
+ progress.classList.add('hidden');render();
+}
+
+function smartParse(t){
+ // Limpieza OCR
+ let text=t.replace(/\n/g,' \n ').replace(/\s+/g,' ');
+
+ // 1. PROVEEDOR - más flexible
+ let prov='';let mProv=text.match(/([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s\.\&\-]{6,}\sS\.A\.S\.|[A-Z\s]{8,}\sS\.A\.|IMPROREP[^\n]{0,20})/i);
+ prov=mProv?mProv[0].trim().toUpperCase():'IMPROREP S.A.S.';
+
+ // 2. FECHA - busca todos los formatos y toma la de emision
+ let fecha='';let fm=text.match(/Fecha[^\n:]*Emisi[^\d]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i)||text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+ fecha=fm?fm[1]:new Date().toLocaleDateString('es-EC');
+
+ // 3. OC - V3: BUSCA EN CUALQUIER PARTE, CON TODAS LAS VARIANTES
+ let oc='';let ocRaw='';
+ // Normaliza para buscar mejor
+ let upper=text.toUpperCase();
+ const ocPatterns=[
+  /ORDEN\s*DE\s*COMPRA\s*N[º°\s:]*([0-9\-\/]{5,20})/i,
+  /ORDEN\s*DE\s*COMPRA[:\s]*([0-9]{5,20})/i,
+  /O\.?\s*C\.?\s*N[º°\s:]*([0-9\-\/]{5,20})/i,
+  /O\/C[:\s]*([0-9\-\/]{5,20})/i,
+  /\bOC[:\s]*([0-9]{5,20})/i,
+  /PEDIDO\s*N[º°\s:]*([0-9]{5,20})/i,
+  /REF[^\d]*([0-9]{7,15})/i, // tu caso tiene 10 digitos
+  /N[º°]\s*([0-9]{7,12})\s*-.*GUIA/i // especifico para tu formato: Nº 4511865931 - GUIA
+ ];
+ for(let pat of ocPatterns){
+  let m=text.match(pat);
+  if(m){oc=m[1].replace(/[^0-9]/g,'');ocRaw=m[0];break;}
+ }
+ // fallback: si hay un numero largo de 10 digitos cerca de ORDEN
+ if(!oc){
+  let m2=text.match(/451\d{7}|45\d{8}/); // tu OC empieza con 451...
+  if(m2) oc=m2[0];
+ }
+ // Si aún no, busca cualquier número de 7-10 digitos en Información Adicional
+ if(!oc){
+  let infoIdx=upper.indexOf('INFORMACION ADICIONAL');
+  if(infoIdx>-1){
+   let chunk=upper.slice(infoIdx, infoIdx+500);
+   let m3=chunk.match(/([0-9]{7,12})/);
+   if(m3) oc=m3[1];
+  }
+ }
+
+ // 4. USUARIO - busca en cualquier lado
+ let usuario='VENTAS';
+ let uM=text.match(/USUARIO[:\s]*([A-Z]{3,15})/i)||text.match(/\b(VENTAS|BODEGA|COMPRAS|ADMIN)\b/i);
+ if(uM) usuario=uM[1].toUpperCase();
+
+ // 5. ITEMS - mejora: detecta tabla por "Descripcion" y corta en SUBTOTAL
+ let items='';
+ let descIdx=upper.indexOf('DESCRIPCION');
+ if(descIdx>-1){
+  let chunk=text.slice(descIdx, descIdx+1200);
+  // Limpia
+  let lines=chunk.split('\n').filter(l=>l.trim().length>5 &&!l.toUpperCase().includes('SUBTOTAL') &&!l.toUpperCase().includes('CANTIDAD'));
+  items=lines.slice(1,4).join(' ').replace(/MANSGLERA/gi,'MANGUERA').substring(0,400);
+ }else{
+  // fallback: busca palabras clave de productos
+  let prods=text.match(/MANG[^\n]{10,120}|MANGUERA[^\n]{5,120}|METRO[^\n]{5,100}/gi);
+  if(prods) items=prods.join('; ');
+ }
+
+ return {nombre_proveedor:prov,items:items||'Revisar manual - OCR no leyó tabla',fecha_dia:fecha,numero_oc:oc,usuario:usuario,oc_fuente:ocRaw,conf:oc?'ALTA':'BAJA - revisar'};
+}
+
+function render(){
+ tbody.innerHTML='';
+ rows.forEach((r,i)=>{
+  let tr=document.createElement('tr');tr.className='border-t';
+  tr.innerHTML=`<td class="p-2"><img src="${r.thumb}" class="w-10 h-10 rounded object-cover"><div class="text-[8px] w-10 truncate">${r.fileName}</div></td>
+  <td class="p-2"><input class="w-24 border-b text-xs" data-i="${i}" data-k="nombre_proveedor" value="${esc(r.nombre_proveedor)}"></td>
+  <td class="p-2"><textarea class="w-full h-14 bg-zinc-50 p-1 rounded text-[11px]" data-i="${i}" data-k="items">${esc(r.items)}</textarea><div class="text-[9px] text-zinc-400">${r.oc_fuente||''} | Conf: ${r.conf}</div></td>
+  <td class="p-2"><input class="w-20 border-b text-xs" data-i="${i}" data-k="fecha_dia" value="${esc(r.fecha_dia)}"></td>
+  <td class="p-2"><input class="w-24 border-b bg-yellow-100 font-bold text-xs" data-i="${i}" data-k="numero_oc" value="${esc(r.numero_oc)}" placeholder="No detectada"></td>
+  <td class="p-2"><input class="w-16 border-b text-xs" data-i="${i}" data-k="usuario" value="${esc(r.usuario)}"></td>
+  <td class="p-2"><button onclick="rows.splice(${i},1);render()" class="text-zinc-400">✕</button></td>`;
+  tbody.appendChild(tr);
+ });
+ tbody.querySelectorAll('input,textarea').forEach(el=>el.onchange=e=>rows[e.target.dataset.i][e.target.dataset.k]=e.target.value);
+ logEl.innerText=rows.length+' facturas cargadas';
+}
+function esc(s){return (s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+document.getElementById('exportBtn').onclick=()=>{if(!rows.length)return alert('Carga facturas');let ws=XLSX.utils.json_to_sheet(rows.map(r=>({Proveedor:r.nombre_proveedor,Items:r.items,Fecha:r.fecha_dia,OC:r.numero_oc,Usuario:r.usuario,Fuente_OC:r.oc_fuente})));let wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Facturas');XLSX.writeFile(wb,'facturas_V3.xlsx')};
+document.getElementById('clearBtn').onclick=()=>{rows=[];render();empty.classList.remove('hidden')};
+</script>
+</body>
+</html>
