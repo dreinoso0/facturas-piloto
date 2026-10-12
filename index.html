@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Facturas a Tabla</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body class="bg-zinc-50 min-h-screen p-4">
+<div class="max-w-7xl mx-auto">
+  <h1 class="text-2xl font-bold mb-1">Extractor: Proveedor / Ítems / Fecha / OC / Usuario</h1>
+  <p class="text-sm text-zinc-500 mb-4">Versión gratis con OCR - Lista para CRIDESA</p>
+  <div id="drop" class="border-2 border-dashed rounded-2xl p-8 text-center bg-white cursor-pointer">
+    <p class="font-medium">📸 Arrastra fotos aquí o haz clic</p>
+    <input id="fileInput" type="file" multiple accept="image/*" class="hidden">
+  </div>
+  <div id="progress" class="hidden mt-4 bg-yellow-50 p-3 rounded-xl text-sm"></div>
+  <div class="mt-6 bg-white rounded-2xl shadow overflow-auto">
+    <table class="w-full text-[13px]"><thead class="bg-zinc-900 text-white"><tr>
+      <th class="p-3 text-left">Foto</th><th class="p-3 text-left">Proveedor</th><th class="p-3 text-left w-[35%]">Ítems</th><th class="p-3 text-left">Fecha</th><th class="p-3 text-left">Nº OC</th><th class="p-3 text-left">Usuario</th><th></th>
+    </tr></thead><tbody id="tbody"></tbody></table>
+    <div id="empty" class="p-10 text-center text-zinc-400 text-sm">Aún no hay datos. Sube una foto.</div>
+  </div>
+  <div class="flex gap-3 mt-5">
+    <button id="exportBtn" class="bg-black text-white px-6 py-3 rounded-xl text-sm font-bold">Exportar a Excel</button>
+    <button id="demoBtn" class="bg-zinc-100 px-4 py-2 rounded-xl text-xs ml-auto">Cargar demo IMPROREP</button>
+  </div>
+</div>
+<script>
+const drop=document.getElementById('drop'),fileInput=document.getElementById('fileInput'),tbody=document.getElementById('tbody'),progress=document.getElementById('progress'),empty=document.getElementById('empty');let rows=[];
+drop.onclick=()=>fileInput.click();drop.ondragover=e=>{e.preventDefault()};drop.ondrop=e=>{e.preventDefault();handleFiles(e.dataTransfer.files)};fileInput.onchange=e=>handleFiles(e.target.files);
+async function handleFiles(files){empty.classList.add('hidden');progress.classList.remove('hidden');for(let file of files){progress.innerText=`Leyendo ${file.name}...`;const dataUrl=await new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(fr.result);fr.readAsDataURL(file)});let text="";try{const {data:{text:t}}=await Tesseract.recognize(dataUrl,'spa+eng',{logger:m=>{if(m.status==='recognizing text')progress.innerText=`OCR ${Math.round(m.progress*100)}%...`}});text=t}catch(e){}const p=parseInvoice(text);rows.push({fileName:file.name,thumb:dataUrl,...p});render()}progress.classList.add('hidden')}
+function parseInvoice(t){let prov=t.match(/IMPROREP S\.A\.S\./i)?"IMPROREP S.A.S.":(t.split('\n')[1]||"Proveedor").trim();let fm=t.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);let fecha=fm?fm[1]:new Date().toLocaleDateString('es-EC');let ocM=t.match(/ORDEN DE COMPRA N[º°]?\s*([0-9]+)/i)||t.match(/OC[:\s]*([0-9\-]+)/i);let oc=ocM?ocM[1]:"";let um=t.match(/Usuario\s+([A-Z]+)/i);let user=um?um[1]:"VENTAS";let items=t.split('\n').filter(l=>l.length>15).slice(2,5).join('; ').substring(0,300);return{nombre_proveedor:prov,items,fecha_dia:fecha,numero_oc:oc,usuario:user}}
+function render(){tbody.innerHTML="";rows.forEach((r,i)=>{const tr=document.createElement('tr');tr.className="border-t";tr.innerHTML=`<td class="p-2"><img src="${r.thumb}" class="w-12 h-12 object-cover rounded"></td><td class="p-2"><input value="${r.nombre_proveedor}" data-i="${i}" data-k="nombre_proveedor" class="w-full border-b text-xs"></td><td class="p-2"><textarea data-i="${i}" data-k="items" class="w-full bg-zinc-50 rounded p-2 text-xs h-16">${r.items}</textarea></td><td class="p-2"><input value="${r.fecha_dia}" data-i="${i}" data-k="fecha_dia" class="w-20 border-b text-xs"></td><td class="p-2"><input value="${r.numero_oc}" data-i="${i}" data-k="numero_oc" class="w-20 border-b bg-yellow-50 text-xs"></td><td class="p-2"><input value="${r.usuario}" data-i="${i}" data-k="usuario" class="w-16 border-b text-xs"></td><td class="p-2"><button onclick="rows.splice(${i},1);render()">✕</button></td>`;tbody.appendChild(tr)});tbody.querySelectorAll('input,textarea').forEach(el=>{el.onchange=e=>{rows[e.target.dataset.i][e.target.dataset.k]=e.target.value}})}
+document.getElementById('exportBtn').onclick=()=>{if(!rows.length)return alert('No hay datos');const ws=XLSX.utils.json_to_sheet(rows.map(r=>({Proveedor:r.nombre_proveedor,Items:r.items,Fecha:r.fecha_dia,OC:r.numero_oc,Usuario:r.usuario})));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Facturas");XLSX.writeFile(wb,"facturas.xlsx")};
+document.getElementById('demoBtn').onclick=()=>{rows=[{fileName:'IMPROREP.jpg',thumb:'',nombre_proveedor:'IMPROREP S.A.S.',items:'MANG METALICA FLEXIBLE INOXIDABLE 6\" X 33.5\" CON BRIDAS ANSI 150 /C; METRO MANGUERA FRENO AIRE NT100-1/4\" SYNFLEX USA',fecha_dia:'12/10/2026',numero_oc:'4511865931',usuario:'VENTAS'}];empty.classList.add('hidden');render()};
+</script>
+</body>
+</html>
